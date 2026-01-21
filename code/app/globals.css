@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+.placeholder-vertical::placeholder {
+  white-space: pre-line; /* Ensures line breaks are respected */
+  line-height: 1.5; /* Adds space between the lines */
+  text-align: left; /* Ensures the text aligns to the left */
+  color: rgba(
+    255,
+    255,
+    255,
+    0.7
+  ); /* Optional: Adjust the color to make it subtle */
+}
+.overflow-scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+/* QuestForge micro-animations */
+@keyframes qf-gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.qf-animated-gradient {
+  background-size: 200% 200%;
+  animation: qf-gradient-shift 7s ease-in-out infinite;
+}
+
+@keyframes qf-float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
+  100% { transform: translateY(0px); }
+}
+
+.qf-float {
+  animation: qf-float 6s ease-in-out infinite;
+}
