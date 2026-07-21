@@ -4,6 +4,8 @@ import { generateQuestions } from "@/services/index";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
+import { redactSensitiveText } from "@/services/agent-quality";
+import { readOpenRouterApiKey } from "@/services/request-security";
 
 export const dynamic = "force-dynamic";
 
@@ -17,9 +19,6 @@ export async function POST(req: NextRequest) {
       process.env.NEXT_PUBLIC_CONVEX_URL || ""
     );
 
-    // Verify Convex connection
-    console.log("Convex URL:", process.env.NEXT_PUBLIC_CONVEX_URL);
-
     if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
       throw new Error("Missing NEXT_PUBLIC_CONVEX_URL environment variable");
     }
@@ -31,21 +30,19 @@ export async function POST(req: NextRequest) {
       if (key.startsWith("file-") && value instanceof File) {
         // Upload file to Convex
         try {
-          console.log(
-            `Processing file: ${value.name} (${value.type}), size: ${value.size} bytes`
-          );
+          console.log("Processing one uploaded file", {
+            contentType: value.type,
+            sizeBytes: value.size,
+          });
 
           // Get file buffer
           const buffer = Buffer.from(await value.arrayBuffer());
-          console.log(`Created buffer of size: ${buffer.length} bytes`);
 
           // Sanitize filename to prevent issues with special characters
           const sanitizedName = value.name.replace(/[^a-zA-Z0-9.-]/g, "_");
-          console.log(`Sanitized filename: ${sanitizedName}`);
 
           try {
             // Generate upload URL from Convex
-            console.log("Requesting upload URL from Convex...");
             const uploadUrl = await convex.mutation(
               api.files.generateUploadUrl,
               {
@@ -53,17 +50,11 @@ export async function POST(req: NextRequest) {
                 contentType: value.type || "application/pdf",
               }
             );
-            console.log(
-              "Upload URL received:",
-              uploadUrl ? "Success" : "Failed"
-            );
-
             if (!uploadUrl) {
               throw new Error("Failed to get upload URL from Convex");
             }
 
             // Upload file to the generated URL
-            console.log("Uploading file to Convex storage...");
             const uploadResponse = await fetch(uploadUrl, {
               method: "POST",
               headers: {
@@ -73,17 +64,12 @@ export async function POST(req: NextRequest) {
             });
 
             if (!uploadResponse.ok) {
-              const responseText = await uploadResponse.text();
-              console.error("Upload response:", responseText);
               throw new Error(
-                `Upload failed with status ${uploadResponse.status}: ${responseText}`
+                `Upload failed with status ${uploadResponse.status}`
               );
             }
 
-            console.log("File uploaded successfully, getting storage ID...");
             const storageId = await uploadResponse.text();
-
-            console.log("Raw storage ID from upload response:", storageId);
 
             // Ensure we have a valid storage ID (not JSON)
             let finalStorageId = storageId;
@@ -91,48 +77,38 @@ export async function POST(req: NextRequest) {
               try {
                 const parsed = JSON.parse(storageId);
                 finalStorageId = parsed.storageId;
-                console.log("Parsed storage ID from JSON:", finalStorageId);
-              } catch (e) {
-                console.error("Failed to parse storage ID, using as-is:", e);
+              } catch {
+                console.error("Failed to parse storage ID response");
                 // Continue with the original value if parsing fails
               }
             }
 
             // Get the Convex file ID
-            console.log(
-              "Saving storage ID to Convex database:",
-              finalStorageId
-            );
             const fileId = await convex.mutation(api.files.saveStorageId, {
               filename: sanitizedName,
               contentType: value.type || "application/pdf",
               storageId: finalStorageId,
             });
 
-            console.log("File saved in Convex with ID:", fileId);
             uploadedFileIds.push(fileId);
           } catch (convexError) {
-            console.error("Convex API error:", convexError);
+            console.error(
+              "Convex API error:",
+              redactSensitiveText(String(convexError))
+            );
             throw convexError;
           }
         } catch (uploadError) {
           console.error(
-            `Error uploading file ${value.name} to Convex:`,
-            uploadError
+            "Error uploading a file to Convex:",
+            redactSensitiveText(String(uploadError))
           );
-          throw new Error(
-            `Failed to upload file ${value.name} to Convex: ${
-              uploadError instanceof Error
-                ? uploadError.message
-                : String(uploadError)
-            }`
-          );
+          throw new Error("Failed to upload one file to Convex");
         }
       }
     }
 
-    // Log uploaded files to verify
-    console.log("Files uploaded to Convex:", uploadedFileIds);
+    console.log("Files uploaded to Convex", { count: uploadedFileIds.length });
 
     // Return the uploaded file IDs in the response
     return NextResponse.json(
@@ -144,7 +120,10 @@ export async function POST(req: NextRequest) {
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (error: any) {
-    console.error("Error processing uploads:", error);
+    console.error(
+      "Error processing uploads:",
+      redactSensitiveText(String(error))
+    );
     return NextResponse.json(
       { message: error.message || "Failed to process request" },
       { status: 500 }
@@ -157,7 +136,7 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const questionHeader = url.searchParams.get("questionHeader");
     const questionDescription = url.searchParams.get("questionDescription");
-    const apiKey = url.searchParams.get("apiKey");
+    const apiKey = readOpenRouterApiKey(req.headers);
     const modelName = url.searchParams.get("modelName") || "qwen/qwq-32b:free";
     const uploadedFilesParam = url.searchParams.get("uploadedFiles");
 
@@ -166,8 +145,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(
         {
           message:
-            "Missing required parameters. Please provide questionHeader, questionDescription, and apiKey.",
-          required: ["questionHeader", "questionDescription", "apiKey"],
+            "Missing required parameters. Provide questionHeader and questionDescription in the URL, and the OpenRouter key in the x-openrouter-api-key header.",
+          required: [
+            "questionHeader",
+            "questionDescription",
+            "x-openrouter-api-key header",
+          ],
           received: {
             questionHeader: !!questionHeader,
             questionDescription: !!questionDescription,
@@ -187,7 +170,9 @@ export async function GET(req: NextRequest) {
         .filter((file) => file.trim() !== "");
     }
 
-    console.log("Processing GET request with Convex file IDs:", convexFileIds);
+    console.log("Processing generation request", {
+      uploadedFileCount: convexFileIds.length,
+    });
 
     // Initialize Convex client for later use in cleanup
     const convex = new ConvexHttpClient(
@@ -210,7 +195,7 @@ export async function GET(req: NextRequest) {
           });
 
           if (!downloadUrl) {
-            console.warn(`Failed to get download URL for file ID ${fileId}`);
+            console.warn("Failed to get one requested download URL");
             continue;
           }
 
@@ -231,7 +216,10 @@ export async function GET(req: NextRequest) {
           `Successfully retrieved ${fileUrls.length} file URLs from Convex`
         );
       } catch (convexError) {
-        console.error("Error retrieving files from Convex:", convexError);
+        console.error(
+          "Error retrieving files from Convex:",
+          redactSensitiveText(String(convexError))
+        );
         return NextResponse.json(
           { message: "Failed to retrieve files from storage" },
           { status: 500 }
@@ -254,18 +242,22 @@ export async function GET(req: NextRequest) {
         console.log("Cleaning up Convex files...");
         for (const fileId of convexFileIds) {
           try {
-            console.log(`Attempting to delete Convex file with ID: ${fileId}`);
             await convex.mutation(api.files.deleteFile, {
               id: fileId as Id<"files">,
             });
-            console.log(`Successfully deleted Convex file: ${fileId}`);
           } catch (deleteError) {
-            console.error(`Error deleting Convex file ${fileId}:`, deleteError);
+            console.error(
+              "Error deleting one Convex file:",
+              redactSensitiveText(String(deleteError))
+            );
           }
         }
         console.log("Convex file cleanup completed");
       } catch (cleanupError) {
-        console.error("Error during Convex file cleanup:", cleanupError);
+        console.error(
+          "Error during Convex file cleanup:",
+          redactSensitiveText(String(cleanupError))
+        );
       }
     };
 
@@ -287,7 +279,10 @@ export async function GET(req: NextRequest) {
             await writer.close();
           }
         } catch (closeError) {
-          console.error("Error closing writer:", closeError);
+          console.error(
+            "Error closing writer:",
+            redactSensitiveText(String(closeError))
+          );
           // We've tried our best to close it, continue with the flow
           writerClosed = true; // Consider it closed even if there was an error
         }
@@ -300,7 +295,10 @@ export async function GET(req: NextRequest) {
             await writer.write(encoder.encode(data));
             return true;
           } catch (writeError) {
-            console.error("Error writing to stream:", writeError);
+            console.error(
+              "Error writing to stream:",
+              redactSensitiveText(String(writeError))
+            );
             writerClosed = true; // Consider it closed if we can't write
             return false;
           }
@@ -312,8 +310,6 @@ export async function GET(req: NextRequest) {
       (async () => {
         try {
           for await (const event of result.stream) {
-            console.log("Received event:", event);
-
             // Check if this is an agent type we want to process
             const agentType = Object.keys(event)[0];
 
@@ -327,28 +323,23 @@ export async function GET(req: NextRequest) {
             let content = "";
 
             try {
-              // Process events from specified agents
-              if (
-                event[agentType] &&
-                event[agentType].messages &&
-                event[agentType].messages[0] &&
-                event[agentType].messages[0].content
-              ) {
-                // Extract content from the standard messages structure
-                content = event[agentType].messages[0].content;
-
-                // If there's additional data like analysisResult, prefer it
-                if (event[agentType].analysisResult) {
-                  content = event[agentType].analysisResult;
+              const node = (event as Record<
+                string,
+                {
+                  messages?: Array<{ content?: unknown }>;
+                  analysisResult?: unknown;
                 }
+              >)[agentType];
+              const messageContent = node?.messages?.[0]?.content;
+
+              if (typeof node?.analysisResult === "string") {
+                content = node.analysisResult;
+              } else if (typeof messageContent === "string") {
+                content = messageContent;
               } else {
-                // Fallback to stringifying the entire event
                 content = JSON.stringify(event);
               }
-
-              console.log(`Processing content from ${agentType}:`, content);
-              // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            } catch (err) {
+            } catch {
               // If any error in parsing, use the event as is
               content = JSON.stringify(event);
             }
@@ -433,11 +424,15 @@ export async function GET(req: NextRequest) {
           // Safely close the writer
           await safelyCloseWriter();
         } catch (error: unknown) {
-          console.error("Stream error:", error);
-          const errorMessage =
+          console.error(
+            "Stream error:",
+            redactSensitiveText(String(error))
+          );
+          const errorMessage = redactSensitiveText(
             error instanceof Error
               ? error.message
-              : "An unknown error occurred";
+              : "An unknown error occurred"
+          );
 
           // Try to write the error message if writer is still available
           await safelyWriteToStream(
@@ -473,9 +468,16 @@ export async function GET(req: NextRequest) {
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (error: any) {
-    console.error("Error generating questions:", error);
+    console.error(
+      "Error generating questions:",
+      redactSensitiveText(String(error))
+    );
     return NextResponse.json(
-      { message: error.message || "Failed to generate questions" },
+      {
+        message: redactSensitiveText(
+          error.message || "Failed to generate questions"
+        ),
+      },
       { status: 500 }
     );
   }

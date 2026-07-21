@@ -11,7 +11,7 @@ import { ArrowButton } from "@/components/eldoraui/arrowbutton";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { ChevronDown } from "lucide-react";
 
 function Page() {
@@ -27,7 +27,7 @@ function Page() {
   const [generatedContent, setGeneratedContent] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [uploadedFileNames, setUploadedFileNames] = useState<string[]>([]);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const [typingText, setTypingText] = useState("");
   const [isTypingComplete, setIsTypingComplete] = useState(false);
   const [displayedContentLength, setDisplayedContentLength] = useState(0);
@@ -42,20 +42,20 @@ function Page() {
     setFiles(files);
   };
 
-  // Cleanup function to close EventSource
-  const cleanupEventSource = () => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
+  // Cancel an in-flight streaming request.
+  const cleanupStream = useCallback(() => {
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
     }
-  };
+  }, []);
 
   // Effect to handle cleanup when component unmounts
   useEffect(() => {
     return () => {
-      cleanupEventSource();
+      cleanupStream();
     };
-  }, []);
+  }, [cleanupStream]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -93,7 +93,6 @@ function Page() {
 
       formData.append("questionHeader", questionHeader);
       formData.append("questionDescription", questionDescription);
-      formData.append("apiKey", apiKey);
       formData.append("modelName", modelName);
 
       console.log("Uploading files...");
@@ -110,18 +109,14 @@ function Page() {
       }
 
       const data = await response.json();
-      console.log("Upload response:", data);
-
       // Store uploaded file names from response
       if (data.uploadedFiles && data.uploadedFiles.length > 0) {
-        console.log("Files uploaded successfully:", data.uploadedFiles);
-
         // Set the state and then start fetching via a callback to ensure state is updated
         setUploadedFileNames(data.uploadedFiles);
 
         // Use a small timeout to ensure state is updated before proceeding
         setTimeout(() => {
-          fetchGeneratedQuestions(data.uploadedFiles);
+          void fetchGeneratedQuestions(data.uploadedFiles);
         }, 50);
       } else {
         console.warn("No files were uploaded in the response");
@@ -138,114 +133,130 @@ function Page() {
     }
   };
 
-  // Update fetchGeneratedQuestions to accept direct file list
-  const fetchGeneratedQuestions = (files: string[] = []) => {
-    // Clear previous content and set generating state
+  const fetchGeneratedQuestions = async (files: string[] = []) => {
     setGeneratedContent("");
     setDisplayedContentLength(0);
     setTypingText("");
     setIsTypingComplete(false);
     setIsGenerating(true);
     setError("");
+    cleanupStream();
 
-    // Clean up any existing EventSource
-    cleanupEventSource();
-
-    // Build URL with query parameters
     const params = new URLSearchParams();
     params.set("questionHeader", questionHeader);
     params.set("questionDescription", questionDescription);
-    params.set("apiKey", apiKey);
     params.set("modelName", modelName);
 
-    // Use the passed files parameter (from POST response) or fall back to state
     const filesToUse = files.length > 0 ? files : uploadedFileNames;
-
-    // Add uploaded files to query if available
     if (filesToUse.length > 0) {
-      console.log("Adding uploaded files to request:", filesToUse);
       params.set("uploadedFiles", filesToUse.join(","));
-    } else {
-      console.warn("No uploaded files to add to request");
     }
 
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
     const requestUrl = `/api/generate-questions?${params.toString()}`;
-    console.log("Making SSE request to:", requestUrl);
 
-    // Create EventSource for Server-Sent Events
-    const eventSource = new EventSource(requestUrl);
-    eventSourceRef.current = eventSource;
+    const handleMessage = (data: { type?: string; content?: string }) => {
+      const content = data.content ?? "";
 
-    // Handle incoming messages
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        console.log("Received data:", data);
-
-        // Only now transition to results view when first real data arrives
-        if (!isFormSubmitted && data.content && data.content.trim() !== "") {
-          setIsAnimating(true);
-
-          // Use timeout to create smooth transition
-          setTimeout(() => {
-            setIsFormSubmitted(true);
-            setIsAnimating(false);
-            setIsLoading(false); // Stop loading state
-
-            // Initial scroll to bottom after view transition
-            setTimeout(() => scrollToBottom(), 100);
-          }, 500);
-        }
-
-        if (data.type === "error") {
-          setError(data.content);
-          setIsGenerating(false);
+      if (!isFormSubmitted && content.trim() !== "") {
+        setIsAnimating(true);
+        setTimeout(() => {
+          setIsFormSubmitted(true);
+          setIsAnimating(false);
           setIsLoading(false);
-          cleanupEventSource();
-          return;
+          setTimeout(() => scrollToBottom(), 100);
+        }, 500);
+      }
+
+      if (data.type === "error") {
+        setError(content);
+        setIsGenerating(false);
+        setIsLoading(false);
+        return;
+      }
+
+      if (!content) return;
+
+      setGeneratedContent((previous) => {
+        const next = previous + (previous ? "\n\n" : "") + content;
+        requestAnimationFrame(() => {
+          if (isGenerating) scrollToBottom();
+        });
+        return next;
+      });
+    };
+
+    try {
+      const response = await fetch(requestUrl, {
+        headers: { "x-openrouter-api-key": apiKey },
+        signal: controller.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.message ?? "Unable to start generation");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+
+        for (const frame of frames) {
+          const lines = frame.split("\n");
+          const eventType =
+            lines.find((line) => line.startsWith("event:"))?.slice(6).trim() ??
+            "message";
+          const payload = lines
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+
+          if (eventType === "complete") {
+            setIsGenerating(false);
+            setIsLoading(false);
+            return;
+          }
+
+          if (!payload) continue;
+
+          if (eventType === "error") {
+            const errorPayload = JSON.parse(payload) as { error?: string };
+            throw new Error(errorPayload.error ?? "Generation stream failed");
+          }
+
+          handleMessage(JSON.parse(payload));
         }
 
-        // Add new content
-        setGeneratedContent((prev) => {
-          const newContent = prev + (prev ? "\n\n" : "") + data.content;
-
-          // Queue scroll to bottom after content update
-          requestAnimationFrame(() => {
-            if (isGenerating) scrollToBottom();
-          });
-
-          return newContent;
-        });
-      } catch (e) {
-        console.error("Failed to parse SSE data:", e);
-        // If parsing fails, just add the raw content
-        setGeneratedContent((prev) => prev + (prev ? "\n\n" : "") + event.data);
+        if (done) break;
       }
-    };
-
-    // Handle connection open
-    eventSource.onopen = () => {
-      console.log("EventSource connection established");
-    };
-
-    // Handle errors
-    eventSource.onerror = (error) => {
-      console.error("EventSource error:", error);
-      setError("Error receiving data from the server. Please try again.");
+    } catch (streamError) {
+      if (streamError instanceof DOMException && streamError.name === "AbortError") {
+        return;
+      }
+      console.error("Generation stream failed");
+      setError(
+        streamError instanceof Error
+          ? streamError.message
+          : "Error receiving data from the server. Please try again."
+      );
       setIsGenerating(false);
-      cleanupEventSource();
-    };
-
-    // Handle completion event
-    eventSource.addEventListener("complete", () => {
-      console.log("Generation complete");
-      setIsGenerating(false);
-      cleanupEventSource();
-    });
+      setIsLoading(false);
+    } finally {
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
+    }
   };
 
   const handleGoBack = () => {
-    cleanupEventSource();
+    cleanupStream();
     setIsAnimating(true);
     setTimeout(() => {
       setIsFormSubmitted(false);
@@ -291,7 +302,7 @@ function Page() {
   }, [displayedContentLength, generatedContent]);
 
   // Function to handle scrolling to bottom with smooth animation
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     if (contentRef.current && !scrolling.current) {
       scrolling.current = true;
 
@@ -314,7 +325,7 @@ function Page() {
         }
       }, 300);
     }
-  };
+  }, [isGenerating]);
 
   // Enhanced effect to monitor content changes and auto-scroll during generation
   useEffect(() => {
@@ -327,7 +338,7 @@ function Page() {
         scrollToBottom();
       });
     }
-  }, [generatedContent, isGenerating]);
+  }, [generatedContent, isGenerating, scrollToBottom]);
 
   // Handle auto-scrolling when typing animation advances
   useEffect(() => {
@@ -342,7 +353,7 @@ function Page() {
         });
       }
     }
-  }, [typingText, isGenerating]);
+  }, [typingText, isGenerating, scrollToBottom]);
 
   // Check if scroll button should be shown
   const handleContentScroll = () => {
