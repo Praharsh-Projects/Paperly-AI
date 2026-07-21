@@ -4,7 +4,6 @@ import { BackgroundBeamsWithCollision } from "@/components/ui/background-beams-w
 import { InteractiveHoverButton } from "@/components/eldoraui/interactivebutton";
 import { ColourfulText } from "@/components/ui/colourful-text";
 import Link from "next/link";
-import { About } from "@/components/About";
 
 function page() {
   return (

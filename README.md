@@ -1,256 +1,108 @@
-# Paperly
+# Paperly AI
 
-Paperly is an advanced exam question generation platform that leverages AI-Agent to automatically create customized question papers from user-uploaded PDF content. Built for educators and assessment creators, Paperly streamlines the often time-consuming process of creating high-quality assessment materials.
+Paperly is a learning project for generating exam papers from user-provided PDF material. A Next.js API sends extracted document context through a five-node LangGraph workflow backed by an OpenRouter-compatible chat model:
 
-## 🚀 Features
+`Extractor → QuestionCreator → QuestionAnalysis → Decider → Formatter`
 
-- **AI-Powered Question Generation**: Creates high-quality, contextually relevant questions from PDF content using advanced language models
-- **Multiple Question Types**: Supports various question formats including multiple-choice, true/false, short answer, and essay questions
-- **Customizable Parameters**: Set question paper parameters such as marks, difficulty levels, and question distribution
-- **Institutional Branding**: Include custom headers with institution name, course details, and exam information
-- **PDF Document Processing**: Upload and extract content from PDF study materials, textbooks, or lecture notes
-- **Real-time Generation**: Watch as your question paper is created through a streaming interface
-- **Multi-Agent Architecture**: Utilizes specialized AI agents for extraction, creation, analysis, and formatting of questions
-- **Markdown Export**: Generated question papers are formatted in clean, structured Markdown for easy export to other formats
-- **Cloud File Storage**: Uses Convex for secure file uploads, storage, and management
+The Decider can request one bounded revision before the graph proceeds to formatting. This repository demonstrates agent orchestration, prompt contracts, streaming, evaluation, and defensive handling of uploaded content; it is not presented as a production or customer-data deployment.
 
-## 🧠 How It Works
+## Agent-quality controls
 
+- Versioned prompts keep generation grounded in the supplied material and treat document text as untrusted data.
+- The Decider accepts only `PERFECT: <reason>` or `NOT PERFECT: <issues>`; malformed output follows a deterministic bounded-retry policy.
+- A real revision counter terminates the feedback loop after one retry and the graph consumes the latest revised messages.
+- Deterministic cases evaluate graph routing, decision parsing, and sensitive-data redaction without paid API calls.
+- Structured traces record node, phase, prompt version, revision count, and content length without recording raw model output.
+- The browser sends the OpenRouter key in a request header, not a query string.
+- Uploaded files are deleted on the normal completion and error paths after generation.
 
+## Stack
 
-Paperly employs a sophisticated multi-agent system powered by LangChain and large language models:
+- Next.js 15, React 19, TypeScript
+- LangGraph, LangChain, OpenRouter-compatible models
+- Convex file storage
+- `pdf-parse` with bounded text chunking
+- Vitest, V8 coverage, ESLint, GitHub Actions
 
-1. **Extractor Agent**: Analyzes your input requirements to understand the exam type, total marks, question types, and subject areas
+## Local setup
 
-2. **Question Creator Agent**: Generates appropriate questions based on the extracted requirements and the content of the uploaded PDFs
+Requirements: Node.js 20+ and pnpm 10.28.1.
 
-3. **Question Analysis Agent**: Evaluates the generated questions for quality, clarity, relevance, and alignment with requirements
-
-4. **Decider Agent**: Determines if the questions meet all requirements or need further refinement
-
-5. **Formatter Agent**: Arranges the questions into a professionally formatted exam paper with clear sections and instructions
-
-This multi-step process ensures high-quality, relevant questions that align with your specific needs and content.
-
-## 🛠️ Technology Stack
-
-- **Frontend**: Next.js, React, TailwindCSS, Framer Motion
-- **Backend**: Next.js API routes
-- **AI Integration**: LangChain, OpenRouter API (compatible with various LLM models)
-- **PDF Processing**: PDF.js, pdf-parse
-- **Styling**: Custom UI components with Tailwind CSS and Framer Motion animations
-- **Streaming**: Server-Sent Events (SSE) for real-time content streaming
-- **Database & Storage**: Convex for file uploads, storage, and management
-
-## 📋 Requirements
-
-- Node.js (v18.0 or later)
-- npm or yarn package manager
-- OpenRouter API key (for accessing AI models)
-- Convex account (for file storage)
-- Modern web browser
-
-## 🔧 Installation & Setup
-
-1. **Clone the repository**
-
-   ```bash
-   <REPOSITORY_URL>
-   cd Paperly
-   ```
-
-2. **Install dependencies**
-
-   ```bash
-   npm install
-   # or
-   yarn install
-   ```
-
-3. **Set up environment variables**
-
-   Create a `.env.local` file in the project root with:
-
-   ```
-   NEXT_PUBLIC_OPENROUTER_SITE_URL="http://localhost:3000"
-   OPENROUTER_API_BASE="https://openrouter.ai/api/v1"
-   NEXT_PUBLIC_CONVEX_URL="your_convex_deployment_url"
-   ```
-
-4. **Initialize Convex**
-
-   ```bash
-   npx convex init
-   ```
-
-   Follow the prompts to connect to your Convex account and create a new deployment.
-
-5. **Run the development server**
-
-   ```bash
-   npm run dev
-   # or
-   yarn dev
-   ```
-
-6. **Access the application**
-
-   Open [http://localhost:3000](http://localhost:3000) in your web browser
-
-## 💻 Usage Guide
-
-### Generating an Exam Paper
-
-1. **Navigate to the Question Generator page**
-
-   From the homepage, click "Start For Free" or navigate to `/chat` route.
-
-2. **Upload Content**
-
-   Use the file upload area to drag and drop or select PDF documents containing the content from which questions should be generated.
-
-3. **Enter Question Paper Parameters**
-
-   - **Question Header**: Enter institutional information, exam details, and course information
-
-     - Example: "University of Technology - Midterm Examination - CS101: Introduction to Programming - Spring 2023"
-
-   - **Question Description**: Provide instructions and parameters for the question paper
-     - Example: "Create a question paper with 5 multiple-choice questions (2 marks each), 3 short-answer questions (5 marks each), and 1 essay question (10 marks). Focus on Python basics and data structures."
-
-4. **Enter API Key**
-
-   Provide your OpenRouter API key in the designated field. This is used to access the AI models that power the question generation.
-
-5. **Select Model (Optional)**
-
-   Choose the AI model to use for generation. The default is "qwen/qwq-32b:free".
-
-6. **Generate Questions**
-
-   Click the "Generate Question Paper" button to start the process. The system will:
-
-   - Process your PDF documents
-   - Extract relevant content
-   - Analyze requirements
-   - Create appropriate questions
-   - Format a complete exam paper
-
-7. **View and Export Results**
-
-   Once generation is complete, you can:
-
-   - Review the generated questions
-   - Copy the content
-   - Print or save the question paper
-
-
-
-## 📁 Project Structure
-
-```
-/
-├── app/                      # Next.js app directory
-│   ├── (root)/               # Root route group
-│   │   ├── chat/             # Question generation page
-│   │   └── page.tsx          # Home page
-│   ├── api/                  # API routes
-│   │   └── generate-questions/ # Question generation API
-│   ├── assets/               # Static assets
-│   ├── globals.css           # Global styles
-│   └── layout.tsx            # Root layout component
-├── components/               # Reusable React components
-│   ├── eldoraui/             # Custom UI components
-│   ├── ui/                   # Base UI components
-│   └── About.tsx             # About component
-├── convex/                   # Convex database schema and functions
-│   ├── _generated/           # Auto-generated Convex type definitions
-│   ├── files.ts              # File storage operations
-│   └── schema.ts             # Database schema
-├── lib/                      # Utility functions
-│   ├── prompts/              # AI prompt templates
-│   └── utils.ts              # Helper functions
-├── public/                   # Public assets
-├── services/                 # Core services
-│   └── index.ts              # Multi-agent question generation service
-├── temp/                     # Temporary directory for uploaded files
-├── .env.local                # Environment variables
-├── next.config.ts            # Next.js configuration
-├── package.json              # Project dependencies
-├── postcss.config.js         # PostCSS configuration
-└── tailwind.config.ts        # Tailwind CSS configuration
+```bash
+git clone https://github.com/Praharsh-Projects/Paperly-AI.git
+cd Paperly-AI/code
+pnpm install --frozen-lockfile
 ```
 
-## 🔄 API Documentation
+Create `code/.env.local`:
 
-### POST `/api/generate-questions`
+```dotenv
+OPENROUTER_API_BASE=https://openrouter.ai/api/v1
+NEXT_PUBLIC_OPENROUTER_SITE_URL=http://localhost:3000
+NEXT_PUBLIC_CONVEX_URL=https://your-deployment.convex.cloud
+```
 
-Uploads PDF files and initiates question generation.
+Initialize a Convex development deployment, then start the UI:
 
-**Request**:
+```bash
+pnpm exec convex dev
+pnpm dev
+```
 
-- HTTP Method: `POST`
-- Content-Type: `multipart/form-data`
-- Body:
-  - `file-{index}`: PDF files
-  - `questionHeader`: String - Exam header details
-  - `questionDescription`: String - Question paper requirements
-  - `apiKey`: String - OpenRouter API key
-  - `modelName`: String (optional) - AI model name
+The user supplies an OpenRouter API key in the UI. The key is held in browser state for the active page and sent to the server in the `x-openrouter-api-key` header.
 
-**Response**:
+## Verification
 
-- Status: `200 OK`
-- Body:
-  ```json
-  {
-    "message": "success",
-    "uploadedFiles": ["1234567890.pdf"]
-  }
-  ```
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test:coverage
+pnpm eval:agent
+pnpm build
+```
 
-### GET `/api/generate-questions`
+Run every local quality gate with:
 
-Generates questions based on previously uploaded files.
+```bash
+pnpm quality
+```
 
-**Request**:
+GitHub Actions runs the same reproducible, frozen-lockfile quality command for pull requests and pushes to `main`. The deterministic suite does not call OpenRouter or Convex.
 
-- HTTP Method: `GET`
-- Query Parameters:
-  - `questionHeader`: String - Exam header details
-  - `questionDescription`: String - Question paper requirements
-  - `apiKey`: String - OpenRouter API key
-  - `modelName`: String (optional) - AI model name
-  - `uploadedFiles`: String - Comma-separated list of uploaded file names
+Latest verified local snapshot:
 
-**Response**:
+- 27/27 Vitest checks passed.
+- 20/20 deterministic agent evaluation cases passed.
+- 100% statements, branches, functions, and lines across the prompt/routing/privacy control modules.
+- Next.js production build completed successfully.
 
-- Content-Type: `text/event-stream`
-- Events:
-  - `data`: Contains generated content chunks
-  - `error`: Contains error information if generation fails
-  - `complete`: Signals generation completion
+## API flow
 
-## 🔒 Security Considerations
+1. `POST /api/generate-questions` accepts PDF files and returns their Convex document IDs.
+2. `GET /api/generate-questions` accepts the generation parameters and file IDs, reads the OpenRouter key from `x-openrouter-api-key`, and streams Server-Sent Events.
+3. The route removes uploaded files on normal stream completion and handled generation errors.
 
-- Paperly does not store your API keys permanently
-- Uploaded PDF files are securely stored in Convex and automatically deleted once question generation is complete
-- No user data is retained between sessions
-- API keys are transmitted securely but should still be protected carefully
+## Security and limitations
 
-## 🔮 Future Improvements
+- Treat the application as a portfolio/learning system, not a vetted production service.
+- Do not use real customer, student, or otherwise sensitive documents.
+- Cleanup is best-effort. A file uploaded without a subsequent generation request can remain in Convex; a scheduled orphan-file retention job is not implemented.
+- The application sends extracted PDF text to the selected external model through OpenRouter. Review provider data terms before using any document.
+- The current pipeline chunks PDF text for model context but does **not** implement vector retrieval or claim to be a RAG system.
+- CI verifies deterministic code paths and the production build. A live OpenRouter/Convex end-to-end run requires user-managed credentials and is intentionally outside CI.
+- Authentication, authorization, rate limiting, malware scanning, and a production privacy review remain out of scope.
 
-- User accounts for saving and organizing generated question papers
-- Additional question formats and customization options
-- Pre-built templates for common exam types
-- Batch generation of multiple question papers
-- Integration with learning management systems
-- Offline mode using local models
+## Repository layout
 
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
----
-
-Built with ❤️ using Next.js, LangChain, Convex, and OpenRouter
+```text
+Paperly-AI/
+├── .github/workflows/ci.yml
+├── README.md
+└── code/
+    ├── app/                         # UI and streaming API route
+    ├── convex/                      # File metadata/storage functions
+    ├── evals/                       # Deterministic cases and tests
+    ├── scripts/run-agent-evals.ts   # Machine-readable evaluation runner
+    ├── services/agent-quality.ts    # Prompt, routing, trace, redaction controls
+    └── services/index.ts            # LangGraph workflow and PDF processing
+```

@@ -1,5 +1,4 @@
 import { StateGraph, END, START, Annotation } from "@langchain/langgraph";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 import {
   ChatPromptTemplate,
@@ -7,8 +6,18 @@ import {
   SystemMessagePromptTemplate,
 } from "@langchain/core/prompts";
 import { ChatOpenAI } from "@langchain/openai";
-import { WebPDFLoader } from "@langchain/community/document_loaders/web/pdf";
 import { Runnable, RunnableConfig } from "@langchain/core/runnables";
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import {
+  AGENT_PROMPTS,
+  buildDeciderReviewPrompt,
+  createSafeTraceEvent,
+  nextRevisionCount,
+  parseDeciderDecision,
+  redactSensitiveText,
+  routeAgentStep,
+  type AgentName,
+} from "./agent-quality";
 
 // Add OpenRouter integration
 const OPENROUTER_API_BASE = process.env.OPENROUTER_API_BASE;
@@ -48,8 +57,8 @@ const AgentState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => "",
   }),
-  iterationCount: Annotation<number>({
-    reducer: (x, y) => y ?? (x ?? 0) + 1,
+  revisionCount: Annotation<number>({
+    reducer: (x, y) => y ?? x ?? 0,
     default: () => 0,
   }),
   isCompleted: Annotation<boolean>({
@@ -121,26 +130,56 @@ async function createAgentWithPrompt(
 async function runAgentNode(props: {
   state: typeof AgentState.State;
   agent: Runnable;
-  name: string;
+  name: AgentName;
   config?: RunnableConfig;
 }) {
   const { state, agent, name, config } = props;
 
-  // Log which agent is running
-  console.log(`🤖 Agent Running: ${name}`);
+  console.info(
+    createSafeTraceEvent({
+      agent: name,
+      phase: "started",
+      revisionCount: state.revisionCount,
+    })
+  );
 
   const result = await agent.invoke(state, config);
 
   // Convert the agent output to an AI message with the agent's name
   const aiMessage = new AIMessage({ content: result.content, name: name });
 
-  // Log agent completion
-  console.log(`✅ Agent Completed: ${name}`);
+  console.info(
+    createSafeTraceEvent({
+      agent: name,
+      phase: "completed",
+      revisionCount: state.revisionCount,
+      content: typeof result.content === "string" ? result.content : undefined,
+    })
+  );
 
   return {
     messages: [aiMessage],
     sender: name,
   };
+}
+
+function findLatestAgentMessage(messages: BaseMessage[], name: AgentName) {
+  return [...messages].reverse().find((message) => message.name === name);
+}
+
+function splitTextIntoChunks(
+  text: string,
+  chunkSize = 4000,
+  chunkOverlap = 200
+): string[] {
+  if (!text.trim()) return [];
+
+  const chunks: string[] = [];
+  const step = chunkSize - chunkOverlap;
+  for (let start = 0; start < text.length; start += step) {
+    chunks.push(text.slice(start, start + chunkSize));
+  }
+  return chunks;
 }
 
 // Create a multi-agent workflow for question generation
@@ -164,75 +203,27 @@ export async function createMultiAgentWorkflow(
   // Create agents with appropriate system prompts
   const extractorAgent = await createAgentWithPrompt(
     llm,
-    `You are the Extractor Agent. Your job is to analyze the input text and extract key information about the requested question paper.
-     Extract the following information:
-     1. Exam Type (mid-term, quiz, final, etc.)
-     2. Total Marks
-     3. Question Difficulty Levels (easy, hard, conceptual, etc.)
-     4. Question Types (MCQ, true-false, short theory, long theory)
-     5. Subject Areas or Topics
-
-     Format your response as a structured JSON object with these keys. Be specific and detailed in your extraction.
-     DO NOT make up information that isn't in the input text. If information is missing, use reasonable defaults based on the available context.`
+    AGENT_PROMPTS.extractor
   );
 
   const questionCreatorAgent = await createAgentWithPrompt(
     llm,
-    `You are the Question Creator Agent. Your job is to create high-quality questions based on the specified question types.
-     Create questions that are clear, specific, and relevant to the content provided.
-     For MCQs: Include 4 options with one correct answer.
-     For True/False: Create unambiguous statements.
-     For Short Theory: Create questions that require brief explanations (1-3 paragraphs).
-     For Long Theory: Create questions that require in-depth analysis and explanation.
-
-     Match the difficulty level specified in the requirements. If multiple question types are requested, create a balanced mix.
-     Base all questions ONLY on the content provided to ensure they are answerable from the material.
-     Include the correct answers where applicable.`
+    AGENT_PROMPTS.questionCreator
   );
 
   const questionAnalysisAgent = await createAgentWithPrompt(
     llm,
-    `You are the Question Analysis Agent. Your job is to analyze questions for quality, clarity, and alignment with requirements.
-     Evaluate the questions based on:
-     1. Clarity: Are questions clear and unambiguous?
-     2. Relevance: Do questions align with the content provided?
-     3. Difficulty: Do questions match the requested difficulty level?
-     4. Coverage: Do questions adequately cover the required topics?
-     5. Correctness: Are the provided answers correct?
-
-     Provide specific feedback on each question and suggest improvements where needed.
-     Be constructive and detailed in your analysis.`
+    AGENT_PROMPTS.questionAnalysis
   );
 
   const deciderAgent = await createAgentWithPrompt(
     llm,
-    `You are the Decider Agent. Your job is to determine if the question set meets all requirements or needs further refinement.
-     Based on the analysis provided, make a clear binary decision:
-
-     If the questions meet all requirements and are ready for formatting, respond ONLY with: "PERFECT: [Brief explanation why]"
-
-     If the questions need ANY improvement, respond ONLY with: "NOT PERFECT: [Specific issues to address]"
-
-     Be thorough in your assessment and consider all aspects of the requirements.
-     Your decision must be binary - either the questions are completely ready or they need more work.`
+    AGENT_PROMPTS.decider
   );
 
   const formatterAgent = await createAgentWithPrompt(
     llm,
-    `You are the Question Formatter Agent. Your job is to format the finalized questions into a professional, well-organized exam paper.
-
-     Format the exam paper with:
-     1. A clear title and header with exam details
-     2. Organized sections by question type
-     3. Clear numbering and marks allocation
-     4. Professional layout and spacing
-     5. Instructions for each section
-
-     Ensure consistency in formatting throughout the document.
-     Present the questions in a logical order, typically from easier to more difficult.
-     If answers are to be included, must format them in a separate section at the end.
-
-     Your output should be a complete, ready-to-use exam paper.`
+    AGENT_PROMPTS.formatter
   );
 
   // Define agent nodes
@@ -287,18 +278,13 @@ export async function createMultiAgentWorkflow(
     console.log("📝 Starting Question Creator Agent...");
     // Include extracted keywords, original prompt with PDF content
     const messages = [...state.messages];
-    const extractorMessage = messages.find((msg) => msg.name === "Extractor");
+    const extractorMessage = findLatestAgentMessage(messages, "Extractor");
     const originalMessage = messages.find(
       (msg) => msg instanceof HumanMessage
     ) as HumanMessage;
 
     if (extractorMessage && originalMessage) {
       const extractorContent = extractorMessage.content as string;
-      console.log(
-        "📋 Using extracted information:",
-        extractorContent.substring(0, 100) + "..."
-      );
-
       // Add a human message with instructions that includes PDF content and extractor keywords
       messages.push(
         new HumanMessage({
@@ -323,6 +309,10 @@ Create appropriate questions using the provided PDF content.`,
     return {
       ...result,
       questionContent: result.messages[0].content,
+      revisionCount: nextRevisionCount({
+        previousSender: state.sender,
+        revisionCount: state.revisionCount,
+      }),
     };
   }
 
@@ -333,10 +323,8 @@ Create appropriate questions using the provided PDF content.`,
     console.log("🔍 Starting Question Analysis Agent...");
     // Include questions and the extractor's keywords for analysis
     const messages = [...state.messages];
-    const creatorMessage = messages.find(
-      (msg) => msg.name === "QuestionCreator"
-    );
-    const extractorMessage = messages.find((msg) => msg.name === "Extractor");
+    const creatorMessage = findLatestAgentMessage(messages, "QuestionCreator");
+    const extractorMessage = findLatestAgentMessage(messages, "Extractor");
 
     if (creatorMessage && extractorMessage) {
       console.log(
@@ -376,24 +364,16 @@ Create appropriate questions using the provided PDF content.`,
     console.log("🧠 Starting Decider Agent...");
     // Include both QuestionCreator and QuestionAnalysis outputs for decision
     const messages = [...state.messages];
-    const analysisMessage = messages.find(
-      (msg) => msg.name === "QuestionAnalysis"
-    );
-    const creatorMessage = messages.find(
-      (msg) => msg.name === "QuestionCreator"
-    );
+    const analysisMessage = findLatestAgentMessage(messages, "QuestionAnalysis");
+    const creatorMessage = findLatestAgentMessage(messages, "QuestionCreator");
 
     if (analysisMessage && creatorMessage) {
-      console.log("📋 Making decision based on question analysis and creation");
       messages.push(
         new HumanMessage({
-          content: `Make a binary decision:
-1. Original questions: ${creatorMessage.content}
-2. Analysis and modifications: ${analysisMessage.content}
-
-If the questions meet ALL requirements, respond ONLY with: "PERFECT[dont need to explain]"
-If the questions need ANY improvement, respond ONLY with: "NOT PERFECT[dont need to explain]"
-Be clear and concise in your decision.`,
+          content: buildDeciderReviewPrompt({
+            questions: String(creatorMessage.content),
+            analysis: String(analysisMessage.content),
+          }),
         })
       );
     }
@@ -415,12 +395,8 @@ Be clear and concise in your decision.`,
     console.log("📄 Starting Formatter Agent...");
     // Include both QuestionCreator and QuestionAnalysis outputs for formatting
     const messages = [...state.messages];
-    const creatorMessage = messages.find(
-      (msg) => msg.name === "QuestionCreator"
-    );
-    const analysisMessage = messages.find(
-      (msg) => msg.name === "QuestionAnalysis"
-    );
+    const creatorMessage = findLatestAgentMessage(messages, "QuestionCreator");
+    const analysisMessage = findLatestAgentMessage(messages, "QuestionAnalysis");
 
     if (creatorMessage && analysisMessage) {
       console.log("📋 Formatting final exam paper");
@@ -456,42 +432,27 @@ Create a well-structured, professional exam paper that incorporates all the feed
   function mainRouter(state: typeof AgentState.State) {
     const messages = state.messages;
     const lastMessage = messages[messages.length - 1] as AIMessage;
-    const iterationCount = state.iterationCount || 0;
+    const content =
+      typeof lastMessage.content === "string" ? lastMessage.content : "";
+    const route = routeAgentStep({
+      sender: lastMessage.name ?? "Unknown",
+      content,
+      revisionCount: state.revisionCount,
+    });
 
-    if (lastMessage.name === "Extractor") {
-      console.log("🔄 Router: Extractor → Question Creator");
-      return "to_question_creator";
-    } else if (lastMessage.name === "QuestionCreator") {
-      console.log("🔄 Router: Question Creator → Question Analysis");
-      return "to_question_analysis";
-    } else if (lastMessage.name === "QuestionAnalysis") {
-      console.log("🔄 Router: Question Analysis → Decider");
-      return "to_decider";
-    } else if (lastMessage.name === "Decider") {
-      const content = lastMessage.content as string;
-
-      // Check if we've already done one iteration through the feedback loop
-      if (content.includes("NOT PERFECT") && iterationCount < 1) {
-        // First time getting NOT PERFECT, go back to question creator
-        console.log(
-          "🔄 Router: Decider → Question Creator (NOT PERFECT, iteration 1)"
-        );
-        return "to_question_creator";
-      } else {
-        // Either PERFECT or we've already gone through the feedback loop once
-        console.log(
-          `🔄 Router: Decider → Formatter (${content.includes("PERFECT") ? "PERFECT" : "MAX ITERATIONS REACHED"})`
-        );
-        return "to_formatter";
-      }
-    } else if (lastMessage.name === "Formatter") {
-      console.log("🔄 Router: Formatter → End");
-      // Ensure we always terminate after formatter
-      return "end";
-    }
-
-    console.log("🔄 Router: Continue with current agent");
-    return "continue";
+    console.info(
+      createSafeTraceEvent({
+        agent: (lastMessage.name ?? "Formatter") as AgentName,
+        phase: "routed",
+        revisionCount: state.revisionCount,
+        content,
+        ...(lastMessage.name === "Decider"
+          ? { decision: parseDeciderDecision(content) }
+          : {}),
+      }),
+      { route }
+    );
+    return route;
   }
 
   // Create the graph
@@ -506,23 +467,19 @@ Create a well-structured, professional exam paper that incorporates all the feed
   // Add edges for the main workflow
   workflow.addConditionalEdges("Extractor", mainRouter, {
     to_question_creator: "QuestionCreator",
-    continue: "Extractor", // loop back if needed
   });
 
   workflow.addConditionalEdges("QuestionCreator", mainRouter, {
     to_question_analysis: "QuestionAnalysis",
-    continue: "QuestionCreator", // loop back if needed
   });
 
   workflow.addConditionalEdges("QuestionAnalysis", mainRouter, {
     to_decider: "Decider",
-    continue: "QuestionAnalysis", // loop back if needed
   });
 
   workflow.addConditionalEdges("Decider", mainRouter, {
     to_formatter: "Formatter",
-    to_question_creator: "QuestionCreator", // Direct routing back to question creator
-    continue: "Decider", // loop back if needed
+    to_question_creator: "QuestionCreator",
   });
 
   // Simplify the Formatter edge to always end the workflow
@@ -550,15 +507,11 @@ export async function generateQuestions({
   // New function to process PDF URLs
   const processPDFUrls = async (urls: string[]) => {
     try {
-      const allDocs = [];
+      const extractedTexts: string[] = [];
 
       for (const url of urls) {
         try {
-          console.log(`Processing PDF URL: ${url}`);
-
           try {
-            // Fetch the PDF directly using fetch API first
-            console.log(`Fetching PDF from URL: ${url}`);
             const response = await fetch(url);
 
             if (!response.ok) {
@@ -567,44 +520,33 @@ export async function generateQuestions({
               );
             }
 
-            // Get the array buffer from the response
             const arrayBuffer = await response.arrayBuffer();
             console.log(`Received PDF data: ${arrayBuffer.byteLength} bytes`);
-
-            // Convert to Uint8Array which WebPDFLoader can handle from memory
-            const uint8Array = new Uint8Array(arrayBuffer);
-
-            // Use WebPDFLoader with the blob data directly
-            const loader = new WebPDFLoader(
-              new Blob([uint8Array], { type: "application/pdf" })
-            );
-
-            console.log("Loading PDF content with WebPDFLoader...");
-            const docs = await loader.load();
-            console.log(`Loaded ${docs.length} documents from PDF`);
-
-            allDocs.push(...docs);
-            console.log(`Successfully processed PDF from URL: ${url}`);
+            const parsed = await pdfParse(Buffer.from(arrayBuffer));
+            extractedTexts.push(parsed.text);
+            console.log("Successfully processed one PDF source");
           } catch (loadError) {
-            console.error(`Error processing PDF from URL ${url}:`, loadError);
+            console.error(
+              "Error processing a PDF source:",
+              redactSensitiveText(String(loadError))
+            );
           }
         } catch (urlError) {
-          console.error(`Error processing URL ${url}:`, urlError);
+          console.error(
+            "Error processing a PDF URL:",
+            redactSensitiveText(String(urlError))
+          );
         }
       }
 
-      // Split documents into chunks
-      const textSplitter = new RecursiveCharacterTextSplitter({
-        chunkSize: 4000,
-        chunkOverlap: 200,
-      });
-
-      console.log(`Splitting ${allDocs.length} documents from URLs`);
-      const splitDocs = await textSplitter.splitDocuments(allDocs);
-      console.log(`Split into ${splitDocs.length} chunks`);
-      return splitDocs;
+      const chunks = extractedTexts.flatMap((text) => splitTextIntoChunks(text));
+      console.log(`Split extracted PDF text into ${chunks.length} chunks`);
+      return chunks;
     } catch (error) {
-      console.error("Error processing PDF URLs:", error);
+      console.error(
+        "Error processing PDF URLs:",
+        redactSensitiveText(String(error))
+      );
       throw new Error(
         `Failed to process PDF URLs: ${
           error instanceof Error ? error.message : String(error)
@@ -617,16 +559,15 @@ export async function generateQuestions({
     // Process files from either local paths or URLs based on what's available
     console.log("📚 Processing PDF files");
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let fileDocs: any[] = [];
+    let fileChunks: string[] = [];
 
     // If we have URLs, process those
     if (fileUrls && fileUrls.length > 0) {
       console.log(`Processing ${fileUrls.length} PDF URLs`);
-      fileDocs = await processPDFUrls(fileUrls);
+      fileChunks = await processPDFUrls(fileUrls);
     }
 
-    const fileText = fileDocs.map((doc) => doc.pageContent).join("\n\n");
+    const fileText = fileChunks.join("\n\n");
     console.log(`📄 Extracted ${fileText.length} characters of text from PDFs`);
 
     // Combine file text with question header and description
@@ -651,7 +592,7 @@ ${fileText}
     // Add an initial state with iteration count 0
     const initialState = {
       messages: [new HumanMessage(inputPrompt)],
-      iterationCount: 0,
+      revisionCount: 0,
     };
     const config = {
       configurable: {
@@ -670,7 +611,10 @@ ${fileText}
       streamEvents: true, // Flag to indicate we're returning a stream
     };
   } catch (error) {
-    console.error("❌ Generation Error:", error);
+    console.error(
+      "Generation error:",
+      redactSensitiveText(String(error))
+    );
     return {
       success: false,
       error: `Failed to generate questions: ${

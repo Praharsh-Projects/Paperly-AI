@@ -80,19 +80,17 @@ export const getDownloadUrl = query({
         try {
           const parsed = JSON.parse(storageId);
           storageId = parsed.storageId;
-        } catch (e) {
-          console.error("Failed to parse storage ID:", e);
+        } catch {
+          console.error("Failed to parse stored file reference");
           // Continue with the original value if parsing fails
         }
       }
 
       // Generate a URL for downloading the file using the corrected storageId
       return await ctx.storage.getUrl(storageId);
-    } catch (error: unknown) {
-      console.error("Error in getDownloadUrl:", error);
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      throw new ConvexError(`Failed to get download URL: ${errorMessage}`);
+    } catch {
+      console.error("Unable to create a download URL");
+      throw new ConvexError("Failed to get download URL");
     }
   },
 });
@@ -118,8 +116,17 @@ export const deleteFile = mutation({
       throw new ConvexError(`File with ID ${args.id} not found`);
     }
 
+    let storageId = file.storageId;
+    if (storageId.startsWith("{") && storageId.includes("storageId")) {
+      try {
+        storageId = JSON.parse(storageId).storageId;
+      } catch {
+        throw new ConvexError("Stored file reference is malformed");
+      }
+    }
+
     // Delete the file from storage
-    await ctx.storage.delete(file.storageId);
+    await ctx.storage.delete(storageId);
 
     // Delete the file document from the database
     await ctx.db.delete(args.id);
