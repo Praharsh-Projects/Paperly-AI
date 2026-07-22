@@ -7,14 +7,14 @@ import Link from "next/link";
 
 function page() {
   return (
-    <BackgroundBeamsWithCollision className="h-screen">
+    <BackgroundBeamsWithCollision className="min-h-screen">
       <div
-        className="h-[60%] flex justify-center w-full  items-center space-x-12"
+        className="relative z-10 flex min-h-screen w-full flex-col items-center justify-center gap-6 px-4 py-8 lg:flex-row lg:gap-12 lg:px-10"
         id="left-and-right-comp"
       >
-        <div id="left" className=" flex-col  w-full ">
-          <div className="  py-10 px-10">
-            <h1 className="text-5xl font-extrabold text-white">
+        <div id="left" className="flex w-full flex-col lg:w-1/2">
+          <div className="px-2 py-6 sm:px-10 sm:py-10">
+            <h1 className="text-4xl font-extrabold text-white sm:text-5xl">
               <ColourfulText text="Paperly" />: AI-Powered Exam Question
               Generator
             </h1>
@@ -22,20 +22,17 @@ function page() {
               Automate the creation of customized question papers based on
               user-uploaded PDFs
             </p>
-            <Link href="/chat">
-              <InteractiveHoverButton className=" my-8" />
+            <Link href="/chat" className="block w-full max-w-sm">
+              <InteractiveHoverButton className="my-8" />
             </Link>
           </div>
         </div>
-        <div id="right" className="flex-1 w-[60%] ">
-          <div className="relative z-10 h-[500px] w-[90%] overflow-hidden mx-auto rounded-lg bg-opacity-100 bg-background">
+        <div id="right" className="w-full lg:w-1/2">
+          <div className="relative z-10 mx-auto h-[360px] w-full overflow-hidden rounded-lg bg-background bg-opacity-100 sm:h-[500px] sm:w-[90%]">
             <Integrations />
           </div>
         </div>
       </div>
-
-      {/* Fixed footer at the bottom */}
-
     </BackgroundBeamsWithCollision>
   );
 }

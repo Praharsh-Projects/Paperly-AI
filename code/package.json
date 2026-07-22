@@ -10,8 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
     "eval:agent": "tsx scripts/run-agent-evals.ts",
-    "quality": "pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm eval:agent && pnpm build"
+    "audit:high": "pnpm audit --audit-level high",
+    "quality": "pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm eval:agent && pnpm build && pnpm audit:high"
   },
   "dependencies": {
     "@langchain/core": "^1.2.3",
@@ -34,6 +36,7 @@
     "tailwind-merge": "^3.0.2"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20.17.24",
@@ -53,8 +56,19 @@
   "packageManager": "pnpm@10.28.1+sha512.7d7dbbca9e99447b7c3bf7a73286afaaf6be99251eb9498baefa7d406892f67b879adb3a1d7e687fc4ccc1a388c7175fbaae567a26ab44d1067b54fcb0d6a316",
   "pnpm": {
     "overrides": {
+      "ajv@<6.14.0": "6.14.0",
+      "brace-expansion@<1.1.16": "1.1.16",
+      "brace-expansion@>=2.0.0 <2.1.2": "2.1.2",
+      "flatted@<3.4.2": "3.4.2",
+      "js-yaml@>=4.0.0 <4.3.0": "4.3.0",
+      "minimatch@<3.1.4": "3.1.4",
+      "minimatch@>=9.0.0 <9.0.7": "9.0.7",
+      "picomatch@<2.3.2": "2.3.2",
+      "picomatch@>=4.0.0 <4.0.4": "4.0.4",
       "postcss": "8.5.21",
-      "ws": "8.21.0"
+      "sharp@<0.35.0": "0.35.0",
+      "ws": "8.21.0",
+      "yaml@>=2.0.0 <2.8.3": "2.8.3"
     }
   }
 }

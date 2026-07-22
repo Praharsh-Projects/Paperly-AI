@@ -22,7 +22,7 @@ The Decider can request one bounded revision before the graph proceeds to format
 - LangGraph, LangChain, OpenRouter-compatible models
 - Convex file storage
 - `pdf-parse` with bounded text chunking
-- Vitest, V8 coverage, ESLint, GitHub Actions
+- Vitest, V8 coverage, Playwright, ESLint, dependency audit, GitHub Actions
 
 ## Local setup
 
@@ -59,22 +59,29 @@ pnpm typecheck
 pnpm test:coverage
 pnpm eval:agent
 pnpm build
+pnpm exec playwright install chromium
+pnpm test:e2e
+pnpm audit --audit-level high
 ```
 
-Run every local quality gate with:
+Run the static, deterministic, build, and audit gates with:
 
 ```bash
 pnpm quality
 ```
 
-GitHub Actions runs the same reproducible, frozen-lockfile quality command for pull requests and pushes to `main`. The deterministic suite does not call OpenRouter or Convex.
+Run `pnpm test:e2e` after installing Chromium to complete the browser gate.
+
+GitHub Actions runs the same reproducible, frozen-lockfile quality command plus desktop and mobile Chromium workflows for pull requests and pushes to `main`. The deterministic suites do not call OpenRouter or Convex.
 
 Latest verified local snapshot:
 
 - 27/27 Vitest checks passed.
 - 20/20 deterministic agent evaluation cases passed.
+- 2/2 responsive Playwright browser checks passed across desktop and mobile Chromium profiles.
 - 100% statements, branches, functions, and lines across the prompt/routing/privacy control modules.
 - Next.js production build completed successfully.
+- The high-severity dependency audit reported no findings.
 
 ## API flow
 
@@ -92,16 +99,22 @@ Latest verified local snapshot:
 - CI verifies deterministic code paths and the production build. A live OpenRouter/Convex end-to-end run requires user-managed credentials and is intentionally outside CI.
 - Authentication, authorization, rate limiting, malware scanning, and a production privacy review remain out of scope.
 
+## AI-assisted development
+
+The repository documents its bounded use of OpenAI Codex for dependency remediation, responsive-layout work, browser-test additions, and verification updates. See [AI-assisted development workflow](docs/ai-assisted-development.md). AI-assisted changes are accepted as repository evidence only after the documented local gates and exact-commit CI pass.
+
 ## Repository layout
 
 ```text
 Paperly-AI/
 ├── .github/workflows/ci.yml
+├── docs/ai-assisted-development.md
 ├── README.md
 └── code/
     ├── app/                         # UI and streaming API route
     ├── convex/                      # File metadata/storage functions
     ├── evals/                       # Deterministic cases and tests
+    ├── e2e/                         # Desktop and mobile Playwright checks
     ├── scripts/run-agent-evals.ts   # Machine-readable evaluation runner
     ├── services/agent-quality.ts    # Prompt, routing, trace, redaction controls
     └── services/index.ts            # LangGraph workflow and PDF processing
